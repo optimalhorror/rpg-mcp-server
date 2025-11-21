@@ -1,0 +1,24 @@
+[project]
+name = "rpg-mcp-server"
+version = "0.1.0"
+description = "A Model Context Protocol server for tabletop RPG campaign management with AI assistance"
+readme = "README.md"
+authors = [
+    { name = "optimalhorror", email = "optimalhorror@duck.com" }
+]
+license = { text = "MIT" }
+keywords = ["mcp", "rpg", "tabletop", "campaign", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+]
+requires-python = ">=3.12"
+dependencies = [
+    "mcp>=1.21.2",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.7,<0.10.0"]
+build-backend = "uv_build"
