@@ -4,18 +4,7 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent, Prompt, GetPromptResult, ResourceTemplate
 
-from tools import (
-    get_begin_campaign_tool,
-    handle_begin_campaign,
-    get_create_npc_tool,
-    handle_create_npc,
-    get_attack_tool,
-    handle_attack,
-    get_remove_from_combat_tool,
-    handle_remove_from_combat,
-    get_create_bestiary_entry_tool,
-    handle_create_bestiary_entry,
-)
+from tools import get_all_tools, call_tool as tools_call_tool
 from resources import list_resources, read_resource
 
 
@@ -25,35 +14,13 @@ app = Server("rpg-mcp-server")
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     """List available tools."""
-    return [
-        get_begin_campaign_tool(),
-        get_create_npc_tool(),
-        get_create_bestiary_entry_tool(),
-        get_attack_tool(),
-        get_remove_from_combat_tool(),
-    ]
+    return get_all_tools()
 
 
 @app.call_tool()
 async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     """Handle tool calls."""
-
-    if name == "begin_campaign":
-        return await handle_begin_campaign(arguments)
-
-    elif name == "create_npc":
-        return await handle_create_npc(arguments)
-
-    elif name == "create_bestiary_entry":
-        return await handle_create_bestiary_entry(arguments)
-
-    elif name == "attack":
-        return await handle_attack(arguments)
-
-    elif name == "remove_from_combat":
-        return await handle_remove_from_combat(arguments)
-
-    return [TextContent(type="text", text=f"Unknown tool: {name}")]
+    return await tools_call_tool(name, arguments)
 
 
 @app.list_resources()

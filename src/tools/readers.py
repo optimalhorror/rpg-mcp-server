@@ -1,25 +1,8 @@
 """Resource reader tools - expose MCP resources as callable tools."""
-import json
-import sys
-from pathlib import Path
-
 from mcp.types import Tool, TextContent
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from utils import CAMPAIGNS_DIR, health_description
-from repository_json import (
-    JsonCampaignRepository,
-    JsonNPCRepository,
-    JsonBestiaryRepository,
-    JsonCombatRepository,
-)
-
-# Global repository instances
-_campaign_repo = JsonCampaignRepository()
-_npc_repo = JsonNPCRepository()
-_bestiary_repo = JsonBestiaryRepository()
-_combat_repo = JsonCombatRepository()
+from utils import health_description, err_not_found, err_required
+from repos import campaign_repo, npc_repo, bestiary_repo, combat_repo, resolve_npc_by_keyword
 
 
 def get_list_campaigns_tool() -> Tool:
@@ -37,25 +20,24 @@ def get_list_campaigns_tool() -> Tool:
 
 async def handle_list_campaigns(arguments: dict) -> list[TextContent]:
     """Handle the list_campaigns tool call."""
-    campaigns = []
+    # Use repository to get campaign list
+    campaign_list = campaign_repo.list_campaigns()
 
-    if CAMPAIGNS_DIR.exists():
-        for campaign_dir in CAMPAIGNS_DIR.iterdir():
-            if campaign_dir.is_dir():
-                campaign_file = campaign_dir / "campaign.json"
-                if campaign_file.exists():
-                    campaign_data = json.loads(campaign_file.read_text())
-                    campaigns.append({
-                        "id": campaign_data.get("id"),
-                        "name": campaign_data.get("name"),
-                        "slug": campaign_dir.name
-                    })
-
-    if not campaigns:
+    if not campaign_list:
         return [TextContent(
             type="text",
             text="No campaigns found. Create one with begin_campaign!"
         )]
+
+    campaigns = []
+    for campaign_id, campaign_slug in campaign_list.items():
+        campaign_data = campaign_repo.get_campaign(campaign_id)
+        if campaign_data:
+            campaigns.append({
+                "id": campaign_id,
+                "name": campaign_data.get("name", "Unknown"),
+                "slug": campaign_slug
+            })
 
     result = "Available campaigns:\n\n"
     for campaign in campaigns:
@@ -89,16 +71,17 @@ async def handle_get_campaign(arguments: dict) -> list[TextContent]:
     campaign_id = arguments.get("campaign_id")
 
     if not campaign_id:
-        return [TextContent(type="text", text="Error: campaign_id is required")]
+        return [TextContent(type="text", text=err_required("campaign_id"))]
 
-    campaign_data = _campaign_repo.get_campaign(campaign_id)
+    campaign_data = campaign_repo.get_campaign(campaign_id)
     if not campaign_data:
-        return [TextContent(type="text", text=f"Error: Campaign not found: {campaign_id}")]
+        return [TextContent(type="text", text=err_not_found("Campaign", campaign_id))]
 
+    player_info = campaign_data.get('player', {})
     result = f"Campaign: {campaign_data.get('name')}\n"
     result += f"ID: {campaign_data.get('id')}\n"
-    result += f"Player: {campaign_data.get('player', {}).get('name', 'Unknown')}\n"
-    result += f"\nFull data:\n{json.dumps(campaign_data, indent=2)}"
+    result += f"Player: {player_info.get('name', 'Unknown')}\n"
+    result += f"Player File: {player_info.get('file', 'N/A')}\n"
 
     return [TextContent(type="text", text=result)]
 
@@ -126,9 +109,9 @@ async def handle_list_npcs(arguments: dict) -> list[TextContent]:
     campaign_id = arguments.get("campaign_id")
 
     if not campaign_id:
-        return [TextContent(type="text", text="Error: campaign_id is required")]
+        return [TextContent(type="text", text=err_required("campaign_id"))]
 
-    npcs_data = _npc_repo.get_npc_index(campaign_id)
+    npcs_data = npc_repo.get_npc_index(campaign_id)
     if not npcs_data:
         return [TextContent(type="text", text="No NPCs found in this campaign.")]
 
@@ -146,7 +129,7 @@ def get_get_npc_tool() -> Tool:
     """Return the get_npc tool definition."""
     return Tool(
         name="get_npc",
-        description="Get full NPC details including stats, health, weapons, and description. Use list_npcs first to find the NPC key.",
+        description="Get full NPC details including stats, health, weapons, and description. Accepts NPC name or keyword.",
         inputSchema={
             "type": "object",
             "properties": {
@@ -154,12 +137,12 @@ def get_get_npc_tool() -> Tool:
                     "type": "string",
                     "description": "The campaign ID"
                 },
-                "npc_key": {
+                "npc_name": {
                     "type": "string",
-                    "description": "The NPC key from list_npcs (e.g., 'aragorn', 'user')"
+                    "description": "NPC name or keyword"
                 }
             },
-            "required": ["campaign_id", "npc_key"]
+            "required": ["campaign_id", "npc_name"]
         }
     )
 
@@ -167,17 +150,18 @@ def get_get_npc_tool() -> Tool:
 async def handle_get_npc(arguments: dict) -> list[TextContent]:
     """Handle the get_npc tool call."""
     campaign_id = arguments.get("campaign_id")
-    npc_key = arguments.get("npc_key")
+    npc_name = arguments.get("npc_name")
 
     if not campaign_id:
-        return [TextContent(type="text", text="Error: campaign_id is required")]
+        return [TextContent(type="text", text=err_required("campaign_id"))]
 
-    if not npc_key:
-        return [TextContent(type="text", text="Error: npc_key is required")]
+    if not npc_name:
+        return [TextContent(type="text", text=err_required("npc_name"))]
 
-    npc_data = _npc_repo.get_npc(campaign_id, npc_key.lower())
+    # Resolve NPC by name or keyword
+    _, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(type="text", text=f"Error: NPC not found: {npc_key}")]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
 
     # Narrative presentation (hide mechanics)
     health = npc_data.get('health', 20)
@@ -187,9 +171,18 @@ async def handle_get_npc(arguments: dict) -> list[TextContent]:
     result = f"NPC: {npc_data.get('name')}\n"
     result += f"Condition: {health_status}\n"
 
-    weapons = npc_data.get("weapons", {})
-    if weapons:
-        weapon_list = ", ".join([f"{w} ({d})" for w, d in weapons.items()])
+    # Get inventory weapons
+    inventory_weapons = []
+    if "inventory" in npc_data and "items" in npc_data["inventory"]:
+        items = npc_data["inventory"]["items"]
+        inventory_weapons = [
+            (name, item.get("damage", "?"))
+            for name, item in items.items()
+            if item.get("weapon")
+        ]
+
+    if inventory_weapons:
+        weapon_list = ", ".join([f"{w} ({d})" for w, d in inventory_weapons])
         result += f"Weapons: {weapon_list}\n"
 
     arc = npc_data.get("arc", "")
@@ -242,9 +235,9 @@ async def handle_get_combat_status(arguments: dict) -> list[TextContent]:
     campaign_id = arguments.get("campaign_id")
 
     if not campaign_id:
-        return [TextContent(type="text", text="Error: campaign_id is required")]
+        return [TextContent(type="text", text=err_required("campaign_id"))]
 
-    combat_data = _combat_repo.get_combat_state(campaign_id)
+    combat_data = combat_repo.get_combat_state(campaign_id)
     if not combat_data:
         return [TextContent(type="text", text="No active combat.")]
 
@@ -288,9 +281,9 @@ async def handle_get_bestiary(arguments: dict) -> list[TextContent]:
     campaign_id = arguments.get("campaign_id")
 
     if not campaign_id:
-        return [TextContent(type="text", text="Error: campaign_id is required")]
+        return [TextContent(type="text", text=err_required("campaign_id"))]
 
-    bestiary_data = _bestiary_repo.get_bestiary(campaign_id)
+    bestiary_data = bestiary_repo.get_bestiary(campaign_id)
     if not bestiary_data:
         return [TextContent(type="text", text="No bestiary found. Create enemy templates with create_bestiary_entry.")]
 
@@ -311,7 +304,5 @@ async def handle_get_bestiary(arguments: dict) -> list[TextContent]:
             result += f"  Description: {description}\n"
 
         result += "\n"
-
-    result += f"Full bestiary data:\n{json.dumps(bestiary_data, indent=2)}"
 
     return [TextContent(type="text", text=result)]

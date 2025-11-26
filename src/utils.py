@@ -42,15 +42,15 @@ def get_campaign_dir(campaign_id: str) -> Path:
 
 
 def roll_dice(formula: str) -> int:
-    """Roll dice from a formula like '1d6', '2d4+5', '20'."""
+    """Roll dice from a formula like '1d6', '2d4+5', '80+5d10', '20'."""
     formula = formula.lower().strip()
 
     # Just a number
     if formula.isdigit():
         return int(formula)
 
-    # Parse XdY+Z or XdY-Z or XdY
-    match = re.match(r'(\d+)?d(\d+)([+-]\d+)?', formula)
+    # Try to parse XdY+Z or XdY-Z or XdY (dice first, modifier second)
+    match = re.match(r'(\d+)?d(\d+)([+-]\d+)?$', formula)
     if match:
         count = int(match.group(1) or 1)
         sides = int(match.group(2))
@@ -59,12 +59,43 @@ def roll_dice(formula: str) -> int:
         total = sum(random.randint(1, sides) for _ in range(count))
         return total + modifier
 
+    # Try to parse Z+XdY or Z-XdY (modifier first, dice second)
+    match = re.match(r'(\d+)([+-])(\d+)?d(\d+)$', formula)
+    if match:
+        base = int(match.group(1))
+        operator = match.group(2)
+        count = int(match.group(3) or 1)
+        sides = int(match.group(4))
+
+        dice_total = sum(random.randint(1, sides) for _ in range(count))
+        if operator == '+':
+            return base + dice_total
+        else:  # operator == '-'
+            return base - dice_total
+
     # Fallback: just return 1
     return 1
 
 
+def threat_level_to_hit_chance(threat_level: str) -> int:
+    """Convert threat level to hit chance percentage."""
+    threat_map = {
+        "none": 10,           # fly, butterfly - mostly harmless
+        "negligible": 25,     # dog, cat - can bite but not dangerous
+        "low": 35,            # wolf, goblin - minor threat
+        "moderate": 50,       # bandit, orc - standard threat
+        "high": 65,           # mercenary, troll - serious threat
+        "deadly": 80,         # dragon, demon - very dangerous
+        "certain_death": 95   # eldritch horror - reality-bending
+    }
+    return threat_map.get(threat_level, 50)  # Default to 50% if unknown
+
+
 def health_description(health: int, max_health: int) -> str:
     """Convert health to human-readable description."""
+    if health <= 0:
+        return "dead"
+
     ratio = health / max_health
     if ratio >= 1.0:
         return "in perfect health"
@@ -121,6 +152,21 @@ def damage_descriptor(damage: int, weapon_formula: str) -> str:
         return "crashes down with devastating force"
 
 
+def format_list_from_dict(d: dict | None, empty_message: str = "none") -> str:
+    """Format dictionary keys as comma-separated list.
+
+    Args:
+        d: Dictionary to format (uses keys)
+        empty_message: Message to return if dict is empty or None
+
+    Returns:
+        Comma-separated string of keys, or empty_message if empty
+    """
+    if not d:
+        return empty_message
+    return ", ".join(d.keys())
+
+
 def healing_descriptor(heal_amount: int, heal_formula: str) -> str:
     """
     Convert healing amount to narrative descriptor based on healing's potential.
@@ -160,3 +206,42 @@ def healing_descriptor(heal_amount: int, heal_formula: str) -> str:
         return "strong healing"
     else:
         return "major restoration"
+
+
+# --- Error formatting utilities ---
+
+def err_not_found(entity: str, name: str, hint: str | None = None) -> str:
+    """Format 'not found' error. Example: "NPC 'Steve' not found." """
+    msg = f"{entity} '{name}' not found."
+    if hint:
+        msg += f" {hint}"
+    return msg
+
+
+def err_already_exists(entity: str, name: str, hint: str | None = None) -> str:
+    """Format 'already exists' error. Example: "NPC 'Steve' already exists." """
+    msg = f"{entity} '{name}' already exists."
+    if hint:
+        msg += f" {hint}"
+    return msg
+
+
+def err_missing(owner: str, item: str, available: str | None = None) -> str:
+    """Format 'doesn't have' error. Example: "Steve doesn't have 'Sword'. Available: Dagger, Axe" """
+    msg = f"{owner} doesn't have '{item}'."
+    if available:
+        msg += f" Available: {available}"
+    return msg
+
+
+def err_required(param: str) -> str:
+    """Format 'required' error. Example: "campaign_id is required." """
+    return f"{param} is required."
+
+
+def err_invalid(description: str, hint: str | None = None) -> str:
+    """Format 'invalid' error. Example: "Weapon damage must be specified." """
+    msg = description
+    if hint:
+        msg += f" {hint}"
+    return msg

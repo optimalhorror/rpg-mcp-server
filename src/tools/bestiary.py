@@ -1,30 +1,24 @@
 from mcp.types import Tool, TextContent
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from repository_json import JsonBestiaryRepository
-
-# Global repository instance (can be swapped for different implementations)
-_bestiary_repo = JsonBestiaryRepository()
+from utils import err_already_exists
+from repos import bestiary_repo
 
 
 def get_create_bestiary_entry_tool() -> Tool:
     """Return the create_bestiary_entry tool definition."""
     return Tool(
         name="create_bestiary_entry",
-        description="Create or update a bestiary entry (enemy template) with stats and weapons. These templates are used as baselines when creating combat participants. To get the campaign_id, first read the campaign://list resource.",
+        description="Create a bestiary entry (enemy template) with stats and weapons. These templates are used as baselines when creating combat participants. Use list_campaigns to get campaign_id.",
         inputSchema={
             "type": "object",
             "properties": {
                 "campaign_id": {
                     "type": "string",
-                    "description": "The campaign ID (get this by reading the campaign://list resource first)"
+                    "description": "The campaign ID (use list_campaigns to get this)"
                 },
                 "name": {
                     "type": "string",
-                    "description": "Template name (e.g., 'guard', 'goblin', 'dragon')"
+                    "description": "Creature type name"
                 },
                 "threat_level": {
                     "type": "string",
@@ -33,11 +27,11 @@ def get_create_bestiary_entry_tool() -> Tool:
                 },
                 "hp": {
                     "type": "string",
-                    "description": "HP formula in dice notation (e.g., '15+1d6', '20', '10+2d4')"
+                    "description": "HP formula using standard dice notation (XdY+Z)"
                 },
                 "weapons": {
                     "type": "object",
-                    "description": "Map of weapon names to damage formulas (e.g., {'sword': '1d6', 'dagger': '1d4'})",
+                    "description": "REQUIRED: Map of attack names to damage formulas. Format: {\"attack_name\": \"XdY\"}",
                     "additionalProperties": {"type": "string"}
                 }
             },
@@ -56,17 +50,25 @@ async def handle_create_bestiary_entry(arguments: dict) -> list[TextContent]:
         weapons = arguments["weapons"]
 
         # Load bestiary via repository
-        bestiary = _bestiary_repo.get_bestiary(campaign_id)
+        bestiary = bestiary_repo.get_bestiary(campaign_id)
 
-        # Add/update entry
-        bestiary[name.lower()] = {
+        # Check if entry already exists
+        entry_key = name.lower()
+        if entry_key in bestiary:
+            existing_entry = bestiary[entry_key]
+            weapon_list = ", ".join([f"{w} ({d})" for w, d in existing_entry.get("weapons", {}).items()])
+            details = f"Existing: {existing_entry.get('threat_level')}, {existing_entry.get('hp')} HP, {weapon_list}. Use get_bestiary to view."
+            return [TextContent(type="text", text=err_already_exists("Bestiary entry", name, details))]
+
+        # Add entry
+        bestiary[entry_key] = {
             "threat_level": threat_level,
             "hp": hp,
             "weapons": weapons
         }
 
         # Save via repository
-        _bestiary_repo.save_bestiary(campaign_id, bestiary)
+        bestiary_repo.save_bestiary(campaign_id, bestiary)
 
         weapon_list = ", ".join([f"{w} ({d})" for w, d in weapons.items()])
         return [TextContent(

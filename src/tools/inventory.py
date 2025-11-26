@@ -1,12 +1,12 @@
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from mcp.types import Tool, TextContent
-from utils import roll_dice, slugify
-from repository_json import JsonNPCRepository
+from utils import roll_dice, format_list_from_dict, err_not_found, err_already_exists, err_missing, err_invalid
+from repos import npc_repo, resolve_npc_by_keyword
 
-_npc_repo = JsonNPCRepository()
+
+def ensure_inventory(npc_data: dict) -> None:
+    """Ensure NPC has inventory initialized with default structure."""
+    if "inventory" not in npc_data:
+        npc_data["inventory"] = {"money": 0, "items": {}}
 
 
 def get_add_item_tool() -> Tool:
@@ -22,7 +22,7 @@ def get_add_item_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC to give the item to",
+                    "description": "NPC name or keyword",
                 },
                 "item_name": {
                     "type": "string",
@@ -34,7 +34,7 @@ def get_add_item_tool() -> Tool:
                 },
                 "source": {
                     "type": "string",
-                    "description": "Where the item came from (e.g., 'looted from goblin', 'bought at market')",
+                    "description": "Where the item came from",
                 },
                 "weapon": {
                     "type": "boolean",
@@ -43,11 +43,11 @@ def get_add_item_tool() -> Tool:
                 },
                 "damage": {
                     "type": "string",
-                    "description": "Damage dice for weapon (e.g., '1d8', '2d6'). Required if weapon=true.",
+                    "description": "Damage dice using standard notation (XdY). Required if weapon=true.",
                 },
                 "container": {
                     "type": "string",
-                    "description": "Optional: Name of container item this is stored in (e.g., 'backpack')",
+                    "description": "Optional: Name of container item this is stored in",
                 },
             },
             "required": ["campaign_id", "npc_name", "item_name", "description", "source"],
@@ -65,34 +65,31 @@ async def handle_add_item(arguments: dict) -> list[TextContent]:
     damage = arguments.get("damage")
     container = arguments.get("container")
 
-    # Slugify NPC name
-    npc_slug = slugify(npc_name)
-
-    # Load NPC
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    # Resolve NPC by name or keyword
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found in campaign {campaign_id}"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    # Use resolved name for display
+    resolved_name = npc_data.get("name", npc_name)
 
     # Validate weapon requirements
     if weapon and not damage:
-        return [TextContent(
-            type="text",
-            text="Error: Weapon items must have damage specified"
-        )]
+        return [TextContent(type="text", text=err_invalid("Weapon items must have damage specified."))]
 
     # Initialize inventory if needed
-    if "inventory" not in npc_data:
-        npc_data["inventory"] = {"money": 0, "items": {}}
+    ensure_inventory(npc_data)
 
     # Check if item already exists
     if item_name in npc_data["inventory"]["items"]:
-        return [TextContent(
-            type="text",
-            text=f"Error: {npc_name} already has an item named '{item_name}'"
-        )]
+        return [TextContent(type="text", text=err_already_exists("Item", item_name, f"{resolved_name} already has this."))]
+
+    # Validate container exists if specified
+    if container:
+        items = npc_data["inventory"]["items"]
+        if container not in items:
+            items_list = format_list_from_dict(items)
+            return [TextContent(type="text", text=err_not_found("Container", container, f"Available: {items_list}"))]
 
     # Create item
     item_data = {
@@ -109,14 +106,14 @@ async def handle_add_item(arguments: dict) -> list[TextContent]:
     npc_data["inventory"]["items"][item_name] = item_data
 
     # Save NPC
-    _npc_repo.save_npc(campaign_id, npc_slug, npc_data)
+    npc_repo.save_npc(campaign_id, npc_slug, npc_data)
 
     weapon_str = f" (weapon, {damage} damage)" if weapon else ""
     container_str = f" in {container}" if container else ""
 
     return [TextContent(
         type="text",
-        text=f"Added '{item_name}'{weapon_str} to {npc_name}'s inventory{container_str}.\nSource: {source}"
+        text=f"Added '{item_name}'{weapon_str} to {resolved_name}'s inventory{container_str}.\nSource: {source}"
     )]
 
 
@@ -133,7 +130,7 @@ def get_remove_item_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC",
+                    "description": "NPC name or keyword",
                 },
                 "item_name": {
                     "type": "string",
@@ -141,7 +138,7 @@ def get_remove_item_tool() -> Tool:
                 },
                 "reason": {
                     "type": "string",
-                    "description": "Optional: Why the item is being removed (e.g., 'ate the bread', 'threw away', 'destroyed in combat')",
+                    "description": "Optional: Why the item is being removed",
                 },
             },
             "required": ["campaign_id", "npc_name", "item_name"],
@@ -155,29 +152,34 @@ async def handle_remove_item(arguments: dict) -> list[TextContent]:
     item_name = arguments["item_name"]
     reason = arguments.get("reason", "removed")
 
-    npc_slug = slugify(npc_name)
-
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    resolved_name = npc_data.get("name", npc_name)
 
     if "inventory" not in npc_data or item_name not in npc_data["inventory"]["items"]:
-        return [TextContent(
-            type="text",
-            text=f"Error: {npc_name} doesn't have an item named '{item_name}'"
-        )]
+        return [TextContent(type="text", text=err_missing(resolved_name, item_name))]
 
     # Remove item
     del npc_data["inventory"]["items"][item_name]
 
-    _npc_repo.save_npc(campaign_id, npc_slug, npc_data)
+    # Clean up orphaned container references - remove container field from items that referenced this item
+    items_updated = []
+    for name, item in npc_data["inventory"]["items"].items():
+        if item.get("container") == item_name:
+            del item["container"]
+            items_updated.append(name)
+
+    npc_repo.save_npc(campaign_id, npc_slug, npc_data)
+
+    result_text = f"Removed '{item_name}' from {resolved_name}'s inventory. Reason: {reason}"
+    if items_updated:
+        result_text += f"\nAlso removed container reference from: {', '.join(items_updated)}"
 
     return [TextContent(
         type="text",
-        text=f"Removed '{item_name}' from {npc_name}'s inventory. Reason: {reason}"
+        text=result_text
     )]
 
 
@@ -194,7 +196,7 @@ def get_update_item_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC",
+                    "description": "NPC name or keyword",
                 },
                 "item_name": {
                     "type": "string",
@@ -227,20 +229,14 @@ async def handle_update_item(arguments: dict) -> list[TextContent]:
     npc_name = arguments["npc_name"]
     item_name = arguments["item_name"]
 
-    npc_slug = slugify(npc_name)
-
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    resolved_name = npc_data.get("name", npc_name)
 
     if "inventory" not in npc_data or item_name not in npc_data["inventory"]["items"]:
-        return [TextContent(
-            type="text",
-            text=f"Error: {npc_name} doesn't have an item named '{item_name}'"
-        )]
+        return [TextContent(type="text", text=err_missing(resolved_name, item_name))]
 
     item = npc_data["inventory"]["items"][item_name]
     updates = []
@@ -268,11 +264,11 @@ async def handle_update_item(arguments: dict) -> list[TextContent]:
             text=f"No updates provided for '{item_name}'"
         )]
 
-    _npc_repo.save_npc(campaign_id, npc_slug, npc_data)
+    npc_repo.save_npc(campaign_id, npc_slug, npc_data)
 
     return [TextContent(
         type="text",
-        text=f"Updated '{item_name}' for {npc_name}: {', '.join(updates)}"
+        text=f"Updated '{item_name}' for {resolved_name}: {', '.join(updates)}"
     )]
 
 
@@ -289,7 +285,7 @@ def get_get_inventory_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC",
+                    "description": "NPC name or keyword",
                 },
             },
             "required": ["campaign_id", "npc_name"],
@@ -301,23 +297,20 @@ async def handle_get_inventory(arguments: dict) -> list[TextContent]:
     campaign_id = arguments["campaign_id"]
     npc_name = arguments["npc_name"]
 
-    npc_slug = slugify(npc_name)
-
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    resolved_name = npc_data.get("name", npc_name)
 
     if "inventory" not in npc_data:
         return [TextContent(
             type="text",
-            text=f"{npc_name} has no inventory initialized."
+            text=f"{resolved_name} has no inventory initialized."
         )]
 
     inventory = npc_data["inventory"]
-    result = f"=== {npc_name}'s Inventory ===\n\n"
+    result = f"=== {resolved_name}'s Inventory ===\n\n"
     result += f"Money: {inventory.get('money', 0)} gold\n\n"
 
     items = inventory.get("items", {})
@@ -353,15 +346,11 @@ def get_add_money_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC",
+                    "description": "NPC name or keyword",
                 },
                 "amount": {
                     "type": "integer",
                     "description": "Amount of money to add (in gold)",
-                },
-                "source": {
-                    "type": "string",
-                    "description": "Optional: Where the money came from (e.g., 'looted from chest', 'quest reward')",
                 },
             },
             "required": ["campaign_id", "npc_name", "amount"],
@@ -373,30 +362,24 @@ async def handle_add_money(arguments: dict) -> list[TextContent]:
     campaign_id = arguments["campaign_id"]
     npc_name = arguments["npc_name"]
     amount = arguments["amount"]
-    source = arguments.get("source", "")
 
-    npc_slug = slugify(npc_name)
-
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    resolved_name = npc_data.get("name", npc_name)
 
     # Initialize inventory if needed
-    if "inventory" not in npc_data:
-        npc_data["inventory"] = {"money": 0, "items": {}}
+    ensure_inventory(npc_data)
 
     old_money = npc_data["inventory"]["money"]
     npc_data["inventory"]["money"] = old_money + amount
 
-    _npc_repo.save_npc(campaign_id, npc_slug, npc_data)
+    npc_repo.save_npc(campaign_id, npc_slug, npc_data)
 
-    source_str = f" ({source})" if source else ""
     return [TextContent(
         type="text",
-        text=f"Added {amount} gold to {npc_name}'s inventory{source_str}.\nNew balance: {npc_data['inventory']['money']} gold"
+        text=f"Added {amount} gold to {resolved_name}'s inventory.\nNew balance: {npc_data['inventory']['money']} gold"
     )]
 
 
@@ -413,15 +396,11 @@ def get_remove_money_tool() -> Tool:
                 },
                 "npc_name": {
                     "type": "string",
-                    "description": "Name of the NPC",
+                    "description": "NPC name or keyword",
                 },
                 "amount": {
                     "type": "integer",
                     "description": "Amount of money to remove (in gold)",
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Optional: Why money is being removed (e.g., 'bought sword', 'paid for room')",
                 },
             },
             "required": ["campaign_id", "npc_name", "amount"],
@@ -433,20 +412,15 @@ async def handle_remove_money(arguments: dict) -> list[TextContent]:
     campaign_id = arguments["campaign_id"]
     npc_name = arguments["npc_name"]
     amount = arguments["amount"]
-    reason = arguments.get("reason", "")
 
-    npc_slug = slugify(npc_name)
-
-    npc_data = _npc_repo.get_npc(campaign_id, npc_slug)
+    npc_slug, npc_data = resolve_npc_by_keyword(campaign_id, npc_name)
     if not npc_data:
-        return [TextContent(
-            type="text",
-            text=f"Error: NPC '{npc_name}' not found"
-        )]
+        return [TextContent(type="text", text=err_not_found("NPC", npc_name))]
+
+    resolved_name = npc_data.get("name", npc_name)
 
     # Initialize inventory if needed
-    if "inventory" not in npc_data:
-        npc_data["inventory"] = {"money": 0, "items": {}}
+    ensure_inventory(npc_data)
 
     old_money = npc_data["inventory"]["money"]
 
@@ -454,16 +428,14 @@ async def handle_remove_money(arguments: dict) -> list[TextContent]:
     if old_money < amount:
         return [TextContent(
             type="text",
-            text=f"{npc_name} only has {old_money} gold but needs {amount} gold. Not enough money to complete transaction."
+            text=f"{resolved_name} only has {old_money} gold but needs {amount} gold. Not enough money to complete transaction."
         )]
 
     npc_data["inventory"]["money"] = old_money - amount
 
-    _npc_repo.save_npc(campaign_id, npc_slug, npc_data)
-
-    reason_str = f" ({reason})" if reason else ""
+    npc_repo.save_npc(campaign_id, npc_slug, npc_data)
 
     return [TextContent(
         type="text",
-        text=f"Removed {amount} gold from {npc_name}'s inventory{reason_str}.\nNew balance: {npc_data['inventory']['money']} gold"
+        text=f"Removed {amount} gold from {resolved_name}'s inventory.\nNew balance: {npc_data['inventory']['money']} gold"
     )]
